@@ -61,9 +61,10 @@ class ImageProcessor:
     @staticmethod
     def detect_orientation(image_array: np.ndarray) -> int:
         """
-        Detect page orientation using rotation angle analysis.
+        Detect page orientation using robust edge and content analysis.
 
-        Uses image moments to detect if text is rotated.
+        Optimized for scanned documents that are usually landscape.
+        Only rotates if orientation is clearly wrong (conservative approach).
 
         Args:
             image_array: CV2 image array (BGR)
@@ -77,37 +78,71 @@ class ImageProcessor:
             else:
                 gray = image_array
 
-            # Apply Canny edge detection
-            edges = cv2.Canny(gray, 100, 200)
+            height, width = gray.shape
+            aspect_ratio = width / height if height > 0 else 1
 
-            # Detect lines using Hough transform
-            lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
+            # If image is already landscape (width > height), default to no rotation
+            # Most scanned documents are naturally landscape
+            if aspect_ratio > 1.2:  # Already landscape
+                logger.debug(f"Page is landscape (aspect {aspect_ratio:.2f}), assuming correct orientation")
+                return 0
 
-            if lines is None or len(lines) < 5:
-                return 0  # Default to no rotation
+            # Apply aggressive edge detection for better contours
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # Dilate edges to connect broken lines
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            edges = cv2.dilate(edges, kernel, iterations=2)
+
+            # Detect lines using Hough transform with higher threshold
+            lines = cv2.HoughLines(edges, 1, np.pi / 180, 150)  # Increased threshold from 100 to 150
+
+            if lines is None or len(lines) < 10:  # Need more lines for confidence
+                logger.debug("Not enough lines detected for orientation")
+                return 0
 
             # Extract angles from detected lines
             angles = []
             for line in lines:
                 rho, theta = line[0]
                 angle = np.degrees(theta)
-                # Normalize angle to 0-90 degrees
+                
+                # Normalize angle: convert to -45 to 45 range
                 if angle > 90:
-                    angle = 180 - angle
+                    angle = angle - 180
                 if angle > 45:
-                    angle = 90 - angle
+                    angle = angle - 90
+                    
                 angles.append(angle)
 
-            # Calculate average angle
-            avg_angle = np.mean(angles)
+            # Calculate statistics
+            angles = np.array(angles)
+            median_angle = np.median(angles)
+            std_angle = np.std(angles)
 
-            # Determine closest 90-degree rotation
-            if abs(avg_angle) < 22.5:
+            logger.debug(
+                f"Orientation detection: median_angle={median_angle:.1f}°, "
+                f"std={std_angle:.1f}°, n_lines={len(lines)}"
+            )
+
+            # Conservative threshold: only rotate if angle is very clear
+            # Increased from 22.5 to 35 degrees for conservative rotation
+            threshold = 35
+
+            # Check if the angle is consistent (low std deviation)
+            if std_angle > 25:  # Inconsistent angles indicate no clear rotation
+                logger.debug(f"Angle is inconsistent (std={std_angle:.1f}), assuming no rotation")
                 return 0
-            elif avg_angle < 0 and abs(avg_angle) >= 22.5:
-                return 270
-            elif avg_angle > 0 and abs(avg_angle) >= 22.5:
+
+            # Determine closest 90-degree rotation only if very clear
+            if abs(median_angle) < threshold:
+                return 0
+            elif abs(median_angle - 90) < threshold:
                 return 90
+            elif abs(median_angle - (-90)) < threshold:
+                return 270
+            elif abs(median_angle) > (180 - threshold):
+                return 180
             else:
                 return 0
 
