@@ -301,8 +301,13 @@ class PDFProcessor:
 
     def close(self) -> None:
         """Close the PDF document."""
-        if self.document:
-            self.document.close()
+        try:
+            if self.document and not self.document.is_closed:
+                self.document.close()
+        except Exception as e:
+            logger.debug(f"Error closing document: {e}")
+        finally:
+            self.document = None
 
     def __enter__(self):
         """Context manager entry."""

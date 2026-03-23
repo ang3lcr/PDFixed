@@ -1,7 +1,7 @@
 """Data models for PDF processing."""
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -15,6 +15,8 @@ class PageInfo:
     is_blank: bool = False
     rotation: int = 0  # 0, 90, 180, 270
     margins: dict = field(default_factory=lambda: {"top": 0, "bottom": 0, "left": 0, "right": 0})
+    source_pdf_path: str = ""  # Path to the source PDF file
+    source_pdf_name: str = ""  # Display name of the source PDF
 
 
 @dataclass

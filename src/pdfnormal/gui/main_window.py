@@ -2,7 +2,7 @@
 
 from PyQt6.QtWidgets import (
     QMainWindow, QStackedWidget, QDialog, QVBoxLayout, QLabel,
-    QMessageBox, QProgressDialog,
+    QMessageBox, QProgressDialog, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon
@@ -10,7 +10,7 @@ from pathlib import Path
 import logging
 import shutil
 
-from ..core import PDFProcessor, ProcessingOptions
+from ..core import PDFProcessor, ProcessingOptions, MultiPDFProcessor
 from .workers import (
     PDFLoadWorker, PDFAnalysisWorker, PDFProcessingWorker, ThumbnailWorker
 )
@@ -34,9 +34,12 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self.processor = None
+        self.multi_processor = None  # MultiPDFProcessor for merged PDFs
+        self.additional_processors = []  # List of additional PDF processors
         self.processing_options = None
         self.current_output_path = None
         self.pages_to_remove = None  # Pages selected for deletion by user
+        self.additional_load_worker = None  # Worker for additional PDF loading
 
         # Create main stack widget
         self.stack = QStackedWidget()
@@ -79,6 +82,7 @@ class MainWindow(QMainWindow):
         self.organizer_screen.back_button.clicked.connect(self._on_organizer_back)
         self.organizer_screen.process_button.clicked.connect(self._on_organizer_process)
         self.organizer_screen.margin_adjustment_requested.connect(self._on_margin_adjustment)
+        self.organizer_screen.pdf_import_requested.connect(self._on_pdf_import_requested)
 
         # Blank pages confirmation screen
         self.blank_confirmation_screen.back_clicked.connect(self._on_blank_confirmation_back)
@@ -225,7 +229,7 @@ Please ensure:
         try:
             # Prepare output file
             self.current_output_path = str(
-                TEMP_DIR / f"processed_{Path(self.processor.pdf_path).stem}.pdf"
+                TEMP_DIR / f"processed_{Path(self.processor.pdf_path if self.processor else self.multi_processor.processors[0].pdf_path).stem}.pdf"
             )
 
             pages_info = self.organizer_screen.get_pages_order()
@@ -239,9 +243,12 @@ Please ensure:
                     else:
                         page_info.is_blank = False
 
+            # Use multi-processor if available, otherwise use single processor
+            processor_to_use = self.multi_processor if self.multi_processor else self.processor
+            
             # Start processing in background
             self.processing_worker = PDFProcessingWorker(
-                self.processor,
+                processor_to_use,
                 self.current_output_path,
                 self.processing_options,
                 pages_info,
@@ -304,6 +311,99 @@ Please ensure:
         """Handle margin screen close."""
         self.stack.setCurrentIndex(1)
 
+    def _on_pdf_import_requested(self) -> None:
+        """Handle PDF import request from organizer screen."""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Import PDF", 
+                "", 
+                "PDF Files (*.pdf)"
+            )
+            
+            if file_path:
+                # Load the additional PDF in background
+                self._load_additional_pdf(file_path)
+            else:
+                logger.info("PDF import cancelled by user")
+                
+        except Exception as e:
+            logger.error(f"Error opening file dialog: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to import PDF: {e}")
+
+    def _load_additional_pdf(self, pdf_path: str) -> None:
+        """Load additional PDF in background worker."""
+        try:
+            # Show loading message
+            self.organizer_screen.import_button.setEnabled(False)
+            self.organizer_screen.import_button.setText("Loading...")
+            
+            # Cancel any existing worker
+            if hasattr(self, 'additional_load_worker') and self.additional_load_worker:
+                self.additional_load_worker.quit()
+                self.additional_load_worker.wait()
+            
+            # Load PDF in background
+            self.additional_load_worker = PDFLoadWorker(pdf_path)
+            self.additional_load_worker.finished.connect(self._on_additional_pdf_loaded)
+            self.additional_load_worker.error.connect(self._on_additional_pdf_load_error)
+            self.additional_load_worker.start()
+            
+        except Exception as e:
+            logger.error(f"Error loading additional PDF: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load PDF: {e}")
+            self.organizer_screen.import_button.setEnabled(True)
+            self.organizer_screen.import_button.setText("Import PDF")
+
+    def _on_additional_pdf_loaded(self, processor: PDFProcessor) -> None:
+        """Handle additional PDF loaded."""
+        try:
+            self.additional_processors.append(processor)
+            
+            # Create or update multi-processor
+            if self.multi_processor is None:
+                self.multi_processor = MultiPDFProcessor()
+                if self.processor:
+                    self.multi_processor.add_processor(self.processor)
+            
+            self.multi_processor.add_processor(processor)
+            
+            # Update pages info with source PDF information
+            for page_info in processor.pages_info:
+                page_info.source_pdf_path = str(processor.pdf_path)
+                page_info.source_pdf_name = Path(processor.pdf_path).stem
+            
+            # Update organizer with merged pages
+            self.organizer_screen.load_thumbnails(self.multi_processor, self.multi_processor.merged_pages_info)
+            
+            # Reset import button
+            self.organizer_screen.import_button.setEnabled(True)
+            self.organizer_screen.import_button.setText("Import PDF")
+            
+            logger.info(f"Additional PDF loaded: {len(processor.pages_info)} pages")
+            
+        except Exception as e:
+            logger.error(f"Error processing loaded additional PDF: {e}")
+            QMessageBox.critical(self, "Error", f"Error processing PDF: {e}")
+            self.organizer_screen.import_button.setEnabled(True)
+            self.organizer_screen.import_button.setText("Import PDF")
+
+    def _on_additional_pdf_load_error(self, error: str) -> None:
+        """Handle additional PDF load error."""
+        logger.error(f"Additional PDF load error: {error}")
+        QMessageBox.critical(self, "Import Failed", f"Failed to import PDF:\n{error}")
+        self.organizer_screen.import_button.setEnabled(True)
+        self.organizer_screen.import_button.setText("Import PDF")
+
+    def _create_merged_processor(self) -> MultiPDFProcessor:
+        """Create a multi-processor that can handle all PDFs."""
+        if self.multi_processor is None:
+            self.multi_processor = MultiPDFProcessor()
+            if self.processor:
+                self.multi_processor.add_processor(self.processor)
+        
+        return self.multi_processor
+
     def _on_export_requested(self, export_path: str) -> None:
         """Handle export request."""
         try:
@@ -321,12 +421,22 @@ Please ensure:
 
     def _on_done(self) -> None:
         """Handle done button."""
-        # Clean up
+        # Clean up workers
+        if hasattr(self, 'additional_load_worker') and self.additional_load_worker:
+            self.additional_load_worker.quit()
+            self.additional_load_worker.wait()
+            self.additional_load_worker = None
+        
+        # Clean up processors
         if self.processor:
             self.processor.close()
+        if self.multi_processor:
+            self.multi_processor.close()
 
         # Reset to import screen
         self.processor = None
+        self.multi_processor = None
+        self.additional_processors.clear()
         self.processing_options = None
         self.import_screen.clear()
         self.results_screen.clear()
@@ -335,8 +445,16 @@ Please ensure:
     def closeEvent(self, event):
         """Handle window close."""
         try:
+            # Clean up workers
+            if hasattr(self, 'additional_load_worker') and self.additional_load_worker:
+                self.additional_load_worker.quit()
+                self.additional_load_worker.wait()
+            
+            # Clean up processors
             if self.processor:
                 self.processor.close()
+            if self.multi_processor:
+                self.multi_processor.close()
 
             # Clean up temp files
             import glob
