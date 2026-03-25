@@ -292,7 +292,15 @@ Please ensure:
     def _on_margin_adjustment(self, page_index: int) -> None:
         """Handle margin adjustment request."""
         try:
-            self.margin_screen.load_page(self.processor, page_index)
+            # The Organizer screen may be showing either a single processor
+            # or a merged `MultiPDFProcessor`. Use the same data source so
+            # page indexes and margin updates stay consistent.
+            processor_to_use = self.multi_processor if self.multi_processor else self.processor
+            if processor_to_use is None:
+                QMessageBox.warning(self, "Warning", "No PDF loaded")
+                return
+
+            self.margin_screen.load_page(processor_to_use, page_index)
             self.stack.setCurrentIndex(3)
         except Exception as e:
             logger.error(f"Error loading margin adjustment: {e}")
@@ -301,8 +309,19 @@ Please ensure:
     def _on_margins_confirmed(self, page_index: int, margins: dict) -> None:
         """Handle margin confirmation."""
         try:
-            if self.processor and page_index < len(self.processor.pages_info):
-                self.processor.pages_info[page_index].margins = margins
+            processor_to_use = self.multi_processor if self.multi_processor else self.processor
+            if processor_to_use is None:
+                return
+
+            # `MultiPDFProcessor` uses `merged_pages_info`, while `PDFProcessor`
+            # uses `pages_info`. Keep the update target aligned with the UI.
+            if hasattr(processor_to_use, "merged_pages_info"):
+                pages_list = processor_to_use.merged_pages_info
+            else:
+                pages_list = processor_to_use.pages_info
+
+            if 0 <= page_index < len(pages_list):
+                pages_list[page_index].margins = margins
                 logger.info(f"Margins set for page {page_index + 1}: {margins}")
         except Exception as e:
             logger.error(f"Error setting margins: {e}")

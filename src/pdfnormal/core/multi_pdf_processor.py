@@ -7,6 +7,7 @@ import logging
 
 from .models import ProcessingOptions, ProcessingResult, PageInfo
 from .image_processor import ImageProcessor
+from .crop_utils import compute_safe_cropbox
 
 logger = logging.getLogger(__name__)
 
@@ -169,17 +170,18 @@ class MultiPDFProcessor:
                         # Get the newly inserted page
                         new_page = output_doc[output_doc.page_count - 1]
                         rect = new_page.rect
+                        # PyMuPDF validates cropboxes against MediaBox.
+                        mediabox = new_page.mediabox
 
-                        # Calculate crop rectangle
-                        crop_rect = fitz.Rect(
-                            rect.x0 + page_info.margins["left"],
-                            rect.y0 + page_info.margins["top"],
-                            rect.x1 - page_info.margins["right"],
-                            rect.y1 - page_info.margins["bottom"],
+                        # Calculate crop rectangle safely.
+                        crop_rect = compute_safe_cropbox(
+                            rect,
+                            page_info.margins,
+                            clamp_rect=mediabox,
                         )
-
-                        new_page.set_cropbox(crop_rect)
-                        result.pages_with_margin_changes.append(page_info.page_number)
+                        if crop_rect is not None:
+                            new_page.set_cropbox(crop_rect)
+                            result.pages_with_margin_changes.append(page_info.page_number)
 
                     result.total_pages_processed += 1
                     processed_count += 1

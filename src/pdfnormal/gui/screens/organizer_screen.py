@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QPoint
 from PyQt6.QtGui import QFont, QCursor
+from PyQt6 import sip
 import logging
 
 from ..widgets import PageThumbnailWidget
@@ -224,12 +225,71 @@ class OrganizerScreen(QWidget):
 
     def _clear_thumbnails(self):
         """Clear all thumbnail widgets from the layout."""
+        drop_indicator = self._drag_state.get("drop_indicator")
+        placeholder = self._drag_state.get("placeholder")
+
+        # Detach overlays from the grid layout before deleting other widgets.
+        for w in (drop_indicator, placeholder):
+            try:
+                if w is not None and w.parent() == self.thumbnails_container:
+                    self.thumbnails_layout.removeWidget(w)
+            except RuntimeError:
+                # Widget might already be deleted; ignore.
+                pass
+
         while self.thumbnails_layout.count():
             item = self.thumbnails_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                w = item.widget()
+                if w is drop_indicator or w is placeholder:
+                    w.hide()
+                    continue
+                w.deleteLater()
         
         self.page_widgets.clear()
+
+    def _ensure_drag_overlays(self) -> None:
+        """Ensure drag overlay widgets exist (Qt may delete them)."""
+        di = self._drag_state.get("drop_indicator")
+        if di is None or sip.isdeleted(di):
+            self._drag_state["drop_indicator"] = QFrame()
+            self._drag_state["drop_indicator"].setFixedHeight(8)
+            self._drag_state["drop_indicator"].setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #0078d4,
+                        stop:0.5 #005a9e,
+                        stop:1 #0078d4);
+                    border: 2px solid #004578;
+                    border-radius: 4px;
+                }
+            """)
+            self._drag_state["drop_indicator"].hide()
+
+        ph = self._drag_state.get("placeholder")
+        if ph is None or sip.isdeleted(ph):
+            self._drag_state["placeholder"] = QFrame()
+            self._drag_state["placeholder"].setFixedSize(160, 200)
+            self._drag_state["placeholder"].setStyleSheet("""
+                QFrame {
+                    background-color: #e3f2fd;
+                    border: 3px dashed #0078d4;
+                    border-radius: 8px;
+                }
+            """)
+
+            placeholder_layout = QVBoxLayout(self._drag_state["placeholder"])
+            placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            drop_label = QLabel("↓ Drop Here ↓")
+            drop_label.setStyleSheet("""
+                color: #0078d4;
+                font-weight: bold;
+                font-size: 14px;
+                background: transparent;
+            """)
+            drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder_layout.addWidget(drop_label)
+            self._drag_state["placeholder"].hide()
 
     def _on_page_clicked(self, page_index: int) -> None:
         """Handle page click event."""
@@ -350,6 +410,7 @@ class OrganizerScreen(QWidget):
 
     def _update_drag_visuals(self, global_pos: QPoint) -> None:
         """Update visual feedback during drag with improved precision."""
+        self._ensure_drag_overlays()
         # Map global position to container coordinates
         local_pos = self.thumbnails_container.mapFromGlobal(global_pos)
         
@@ -379,8 +440,12 @@ class OrganizerScreen(QWidget):
         
         # Skip if trying to insert at same position as source
         if insert_index == source_index:
-            self._drag_state['drop_indicator'].hide()
-            self._drag_state['placeholder'].hide()
+            di = self._drag_state.get("drop_indicator")
+            ph = self._drag_state.get("placeholder")
+            if di is not None and not sip.isdeleted(di):
+                di.hide()
+            if ph is not None and not sip.isdeleted(ph):
+                ph.hide()
             return
         
         # Adjust for the removed source widget
@@ -397,6 +462,7 @@ class OrganizerScreen(QWidget):
 
     def _show_drop_preview_at_index(self, insert_index: int, effective_index: int) -> None:
         """Show drop preview at specific grid index."""
+        self._ensure_drag_overlays()
         columns = 5
         
         # Calculate row and column for insert position
@@ -428,6 +494,7 @@ class OrganizerScreen(QWidget):
 
     def _show_drop_preview(self, index: int, before: bool = True) -> None:
         """Show drop preview with indicator line and placeholder space."""
+        self._ensure_drag_overlays()
         if index < 0 or index >= len(self.page_widgets):
             return
         
@@ -493,13 +560,19 @@ class OrganizerScreen(QWidget):
         """End drag operation and perform reordering if needed."""
         if not self._drag_state['is_dragging']:
             return
+
+        self._ensure_drag_overlays()
             
         source_index = self._drag_state['source_index']
         target_index = self._drag_state['drop_target_index']
         
         # Hide drop indicator and placeholder
-        self._drag_state['drop_indicator'].hide()
-        self._drag_state['placeholder'].hide()
+        di = self._drag_state.get("drop_indicator")
+        ph = self._drag_state.get("placeholder")
+        if di is not None and not sip.isdeleted(di):
+            di.hide()
+        if ph is not None and not sip.isdeleted(ph):
+            ph.hide()
         
         # Restore dragged widget appearance
         if self._drag_state['dragged_widget']:

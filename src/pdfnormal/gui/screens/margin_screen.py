@@ -23,6 +23,7 @@ class MarginAdjustmentScreen(QWidget):
         super().__init__(parent)
         self.page_index = None
         self.processor = None
+        self._preview_image_shape = None  # (height_px, width_px) used for unit conversion
         self.setup_ui()
 
     def setup_ui(self) -> None:
@@ -102,6 +103,9 @@ class MarginAdjustmentScreen(QWidget):
 
             # Get full resolution page image
             image = processor.get_page_image(page_index, zoom=1.0)
+            if image is not None:
+                height_px, width_px = image.shape[:2]
+                self._preview_image_shape = (height_px, width_px)
             self.margin_widget.set_page_image(image)
         except Exception as e:
             logger.error(f"Error loading page for margin adjustment: {e}")
@@ -114,8 +118,36 @@ class MarginAdjustmentScreen(QWidget):
     def _on_confirm(self) -> None:
         """Confirm margin changes."""
         if self.page_index is not None:
-            margins = self.margin_widget.get_margins()
-            self.margins_confirmed.emit(self.page_index, margins)
+            margins_px = self.margin_widget.get_margins()
+
+            # Convert preview-image pixels -> PDF page coordinates.
+            # `compute_safe_cropbox` expects margins in the same coordinate
+            # system as `page.rect` (PyMuPDF points), not UI pixels.
+            margins_pdf = margins_px
+            try:
+                if self._preview_image_shape is not None and self.processor is not None:
+                    height_px, width_px = self._preview_image_shape
+                    if height_px > 0 and width_px > 0:
+                        if hasattr(self.processor, "merged_pages_info"):
+                            page_info = self.processor.merged_pages_info[self.page_index]
+                        else:
+                            page_info = self.processor.pages_info[self.page_index]
+
+                        scale_x = float(page_info.width) / float(width_px)
+                        scale_y = float(page_info.height) / float(height_px)
+
+                        margins_pdf = {
+                            "top": max(0.0, float(margins_px.get("top", 0)) * scale_y),
+                            "bottom": max(0.0, float(margins_px.get("bottom", 0)) * scale_y),
+                            "left": max(0.0, float(margins_px.get("left", 0)) * scale_x),
+                            "right": max(0.0, float(margins_px.get("right", 0)) * scale_x),
+                        }
+            except Exception as e:
+                # Fallback: preserve the old behaviour (pixels-as-units) if
+                # conversion fails for any reason.
+                logger.error(f"Error converting margin units: {e}")
+
+            self.margins_confirmed.emit(self.page_index, margins_pdf)
             self.closed.emit()
 
     def _on_cancel(self) -> None:
