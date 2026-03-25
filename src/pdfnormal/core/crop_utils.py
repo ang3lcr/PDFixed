@@ -56,11 +56,15 @@ def compute_safe_cropbox(
 
     desired_x0 = float(rect.x0) + left
     desired_x1 = float(rect.x1) - right
-    # UI semantics: `top` means trimming from the visual top edge.
-    # PyMuPDF coordinates: y increases upwards from the bottom-left.
-    # Therefore:
-    # - trim visual `bottom` by moving y0 up
-    # - trim visual `top` by moving y1 down
+
+    # UI semantics:
+    # - `top` trims from the visual top edge
+    # - `bottom` trims from the visual bottom edge
+    #
+    # PyMuPDF cropboxes use the PDF user-space convention where y increases
+    # upward. Therefore:
+    # - bottom trims the lower edge: y0 += bottom
+    # - top trims the upper edge: y1 -= top
     desired_y0 = float(rect.y0) + bottom
     desired_y1 = float(rect.y1) - top
 

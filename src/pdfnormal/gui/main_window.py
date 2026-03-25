@@ -300,7 +300,8 @@ Please ensure:
                 QMessageBox.warning(self, "Warning", "No PDF loaded")
                 return
 
-            self.margin_screen.load_page(processor_to_use, page_index)
+            apply_rotation = bool(self.processing_options and self.processing_options.auto_correct_orientation)
+            self.margin_screen.load_page(processor_to_use, page_index, apply_rotation=apply_rotation)
             self.stack.setCurrentIndex(3)
         except Exception as e:
             logger.error(f"Error loading margin adjustment: {e}")

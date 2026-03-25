@@ -1,5 +1,3 @@
-PyQt6==6.6.1
-PyQt6-sip==13.6.0
 PyMuPDF==1.23.8
 PyMuPDF-Fonts==1.0.5
 opencv-python==4.8.1.78
@@ -7,3 +5,5 @@ pillow==10.1.0
 numpy==1.24.3
 pytesseract==0.3.10
 python-dotenv==1.0.0
+PyQt6==6.9.0
+PyQt6-sip==13.10.0
