@@ -3,10 +3,10 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QScrollArea, QGridLayout, QSlider, QSpinBox, QGroupBox,
-    QApplication, QFrame, QGraphicsOpacityEffect
+    QApplication, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPropertyAnimation, QRect, QMimeData, QParallelAnimationGroup
-from PyQt6.QtGui import QPixmap, QImage, QFont, QColor, QIcon, QDrag, QCursor, QPainter, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PyQt6.QtGui import QPixmap, QImage, QFont, QColor
 from PyQt6.QtCore import QThread
 import numpy as np
 import cv2
@@ -20,7 +20,6 @@ class PageThumbnailWidget(QWidget):
 
     clicked = pyqtSignal(int)  # page_index
     right_clicked = pyqtSignal(int)  # page_index
-    drag_started = pyqtSignal(int)  # page_index
 
     def __init__(self, page_index: int, parent=None):
         """Initialize thumbnail widget."""
@@ -28,8 +27,6 @@ class PageThumbnailWidget(QWidget):
         self.page_index = page_index
         self.thumbnail_image = None
         self.is_selected = False
-        self.is_drag_target = False  # For drop indication
-        self.drop_position = None  # 'before' or 'after'
 
         self.setFixedSize(160, 200)
 
@@ -110,41 +107,6 @@ class PageThumbnailWidget(QWidget):
                 }
             """)
         else:
-            self._update_normal_style()
-
-    def set_drag_target(self, is_target: bool, position: str = None) -> None:
-        """Set drag target indication."""
-        self.is_drag_target = is_target
-        self.drop_position = position
-        self._update_normal_style()
-
-    def _update_normal_style(self) -> None:
-        """Update normal style based on drag state."""
-        if self.is_drag_target:
-            if self.drop_position == 'before':
-                border_color = '#0078d4'  # Blue for before
-                bg_color = '#e3f2fd'
-                border_width = '3px'
-                border_style = 'solid'
-            elif self.drop_position == 'after':
-                border_color = '#4caf50'  # Green for after  
-                bg_color = '#e8f5e8'
-                border_width = '3px'
-                border_style = 'solid'
-            else:
-                border_color = '#ff6b35'  # Orange for general target
-                bg_color = '#fff3e0'
-                border_width = '3px'
-                border_style = 'solid'
-                
-            self.setStyleSheet(f"""
-                PageThumbnailWidget {{
-                    background: {bg_color};
-                    border: {border_width} {border_style} {border_color};
-                    border-radius: 4px;
-                }}
-            """)
-        else:
             self.setStyleSheet("""
                 PageThumbnailWidget {
                     background: white;
@@ -157,109 +119,13 @@ class PageThumbnailWidget(QWidget):
                 }
             """)
 
-    def paintEvent(self, event) -> None:
-        """Paint event for additional visual effects."""
-        super().paintEvent(event)
-        
-        if self.is_drag_target and self.drop_position:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            # Draw drop indicator arrow
-            if self.drop_position == 'before':
-                # Draw arrow at top
-                pen = QPen(QColor('#ff6b35'), 3)
-                painter.setPen(pen)
-                painter.drawLine(10, 5, self.width() - 10, 5)
-                # Arrow head
-                painter.drawLine(15, 10, 10, 5)
-                painter.drawLine(self.width() - 15, 10, self.width() - 10, 5)
-                
-            elif self.drop_position == 'after':
-                # Draw arrow at bottom
-                pen = QPen(QColor('#4caf50'), 3)
-                painter.setPen(pen)
-                painter.drawLine(10, self.height() - 5, self.width() - 10, self.height() - 5)
-                # Arrow head
-                painter.drawLine(15, self.height() - 10, 10, self.height() - 5)
-                painter.drawLine(self.width() - 15, self.height() - 10, self.width() - 10, self.height() - 5)
-            
-            painter.end()
-
     def mousePressEvent(self, event):
         """Handle mouse press event."""
-        # Let parent handle all mouse events for drag-and-drop
-        event.ignore()
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.page_index)
         elif event.button() == Qt.MouseButton.RightButton:
             self.right_clicked.emit(self.page_index)
-
-    def mouseMoveEvent(self, event):
-        """Handle mouse move event for drag."""
-        # Let parent handle all mouse events for drag-and-drop
-        event.ignore()
-
-    def mouseReleaseEvent(self, event):
-        """Handle mouse release event."""
-        # Let parent handle all mouse events for drag-and-drop
-        event.ignore()
-
-    def _start_drag(self):
-        """Start drag operation."""
-        drag = QDrag(self)
-        mime_data = QMimeData()
-        
-        # Store page index as text
-        mime_data.setText(str(self.page_index))
-        drag.setMimeData(mime_data)
-
-        # Create a pixmap for the drag visual
-        if self.thumbnail_image is not None:
-            # Use the actual thumbnail if available
-            pixmap = QPixmap.fromImage(
-                QImage(
-                    self.thumbnail_image.data,
-                    self.thumbnail_image.shape[1],
-                    self.thumbnail_image.shape[0],
-                    3 * self.thumbnail_image.shape[1],
-                    QImage.Format.Format_BGR888
-                )
-            ).scaled(100, 130, Qt.AspectRatioMode.KeepAspectRatio)
-            
-            # Add semi-transparent overlay for drag effect
-            painter = QPainter(pixmap)
-            painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 50))  # Semi-transparent black overlay
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, f"Page {self.page_index + 1}")
-            painter.end()
-        else:
-            # Fallback to a styled rectangle
-            pixmap = QPixmap(100, 130)
-            pixmap.fill(QColor(100, 100, 100))
-            painter = QPainter(pixmap)
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, f"Page {self.page_index + 1}")
-            painter.end()
-
-        # Set drag pixmap with transparency
-        drag.setPixmap(pixmap)
-        drag.setHotSpot(pixmap.rect().center())
-
-        # Apply transparency effect to original widget during drag
-        opacity_effect = QGraphicsOpacityEffect()
-        opacity_effect.setOpacity(0.5)
-        self.setGraphicsEffect(opacity_effect)
-
-        # Execute the drag
-        drop_action = drag.exec(Qt.DropAction.MoveAction)
-
-        # Restore original widget appearance
-        self.setGraphicsEffect(None)
-
-    def mouseDoubleClickEvent(self, event):
-        """Handle double click."""
-        self.clicked.emit(self.page_index)
+            event.accept()
 
 
 class MarginAdjustmentWidget(QWidget):
