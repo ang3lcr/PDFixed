@@ -73,16 +73,44 @@ class OrganizerScreen(QWidget):
         self.thumbnails_layout.setSpacing(10)
         self.thumbnails_layout.setContentsMargins(10, 10, 10, 10)
         
-        # Create drop indicator (initially hidden)
+        # Create enhanced drop indicator with shadow effect (initially hidden)
         self._drag_state['drop_indicator'] = QFrame()
-        self._drag_state['drop_indicator'].setFixedHeight(4)
+        self._drag_state['drop_indicator'].setFixedHeight(8)
         self._drag_state['drop_indicator'].setStyleSheet("""
             QFrame {
-                background-color: #0078d4;
-                border-radius: 2px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #0078d4,
+                    stop:0.5 #005a9e,
+                    stop:1 #0078d4);
+                border: 2px solid #004578;
+                border-radius: 4px;
             }
         """)
         self._drag_state['drop_indicator'].hide()
+        
+        # Create placeholder widget for drop position (shows empty space)
+        self._drag_state['placeholder'] = QFrame()
+        self._drag_state['placeholder'].setFixedSize(160, 200)
+        self._drag_state['placeholder'].setStyleSheet("""
+            QFrame {
+                background-color: #e3f2fd;
+                border: 3px dashed #0078d4;
+                border-radius: 8px;
+            }
+        """)
+        # Add drop icon/label to placeholder
+        placeholder_layout = QVBoxLayout(self._drag_state['placeholder'])
+        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_label = QLabel("↓ Drop Here ↓")
+        drop_label.setStyleSheet("""
+            color: #0078d4;
+            font-weight: bold;
+            font-size: 14px;
+            background: transparent;
+        """)
+        drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addWidget(drop_label)
+        self._drag_state['placeholder'].hide()
 
         scroll_area.setWidget(self.thumbnails_container)
         layout.addWidget(scroll_area, 1)
@@ -249,20 +277,39 @@ class OrganizerScreen(QWidget):
             
             if event.type() == event.Type.MouseButtonPress:
                 if event.button() == Qt.MouseButton.LeftButton:
-                    # Start drag operation
-                    self._start_drag(widget_index, obj)
+                    # Store initial position for drag detection
+                    self._drag_state['press_pos'] = event.globalPosition().toPoint()
+                    self._drag_state['press_widget'] = obj
+                    self._drag_state['press_index'] = widget_index
                     return True
                     
             elif event.type() == event.Type.MouseMove:
-                if self._drag_state['is_dragging']:
+                if self._drag_state.get('press_pos') and not self._drag_state['is_dragging']:
+                    # Check if moved enough to start drag
+                    current_pos = event.globalPosition().toPoint()
+                    drag_distance = (current_pos - self._drag_state['press_pos']).manhattanLength()
+                    if drag_distance >= 10:  # 10 pixels threshold
+                        # Start actual drag
+                        self._start_drag(self._drag_state['press_index'], self._drag_state['press_widget'])
+                        self._update_drag_visuals(current_pos)
+                    return True
+                elif self._drag_state['is_dragging']:
                     # Update drag position and show visual feedback
                     self._update_drag_visuals(event.globalPosition().toPoint())
                     return True
                     
             elif event.type() == event.Type.MouseButtonRelease:
-                if event.button() == Qt.MouseButton.LeftButton and self._drag_state['is_dragging']:
-                    # End drag operation
-                    self._end_drag(widget_index)
+                if event.button() == Qt.MouseButton.LeftButton:
+                    if self._drag_state['is_dragging']:
+                        # End drag operation
+                        self._end_drag(widget_index)
+                    else:
+                        # Was just a click, not a drag
+                        self._on_page_clicked(widget_index)
+                    # Clear press state
+                    self._drag_state['press_pos'] = None
+                    self._drag_state['press_widget'] = None
+                    self._drag_state['press_index'] = None
                     return True
         
         return super().eventFilter(obj, event)
@@ -276,11 +323,24 @@ class OrganizerScreen(QWidget):
         self._drag_state['source_index'] = index
         self._drag_state['dragged_widget'] = widget
         self._drag_state['drop_target_index'] = index
+        self._drag_state['drag_start_pos'] = widget.mapToGlobal(widget.rect().center())
         
-        # Apply visual effect to dragged widget (opacity reduction)
+        # Store original position for animation
+        self._drag_state['original_geometry'] = widget.geometry()
+        
+        # Apply visual effect to dragged widget (opacity reduction + slight scale)
         opacity_effect = QGraphicsOpacityEffect()
-        opacity_effect.setOpacity(0.5)
+        opacity_effect.setOpacity(0.6)
         widget.setGraphicsEffect(opacity_effect)
+        
+        # Add shadow effect via stylesheet
+        widget.setStyleSheet("""
+            PageThumbnailWidget {
+                background: white;
+                border: 2px solid #0078d4;
+                border-radius: 8px;
+            }
+        """)
         
         # Change cursor to indicate dragging
         from PyQt6.QtWidgets import QApplication
@@ -289,61 +349,145 @@ class OrganizerScreen(QWidget):
         logger.debug(f"Started dragging page {index + 1}")
 
     def _update_drag_visuals(self, global_pos: QPoint) -> None:
-        """Update visual feedback during drag (drop indicator)."""
+        """Update visual feedback during drag with improved precision."""
         # Map global position to container coordinates
         local_pos = self.thumbnails_container.mapFromGlobal(global_pos)
         
-        # Find the widget under the cursor
-        target_widget = self.thumbnails_container.childAt(local_pos)
+        columns = 5
+        spacing = 10
+        widget_width = 160
+        widget_height = 200
         
-        # Find parent PageThumbnailWidget
-        while target_widget and not isinstance(target_widget, PageThumbnailWidget):
-            target_widget = target_widget.parent()
+        # Calculate which grid cell the cursor is closest to
+        total_width = self.thumbnails_container.width()
+        margins = self.thumbnails_layout.contentsMargins()
+        available_width = total_width - margins.left() - margins.right()
+        cell_width = (available_width - (columns - 1) * spacing) // columns
         
-        if target_widget and target_widget in self.page_widgets:
-            target_index = self.page_widgets.index(target_widget)
-            
-            # Determine insert position (before or after based on cursor position)
-            widget_rect = target_widget.geometry()
-            widget_center = widget_rect.center()
-            
-            if local_pos.y() < widget_center.y():
-                # Insert before this widget
-                self._drag_state['drop_target_index'] = target_index
-                self._show_drop_indicator(target_index, before=True)
-            else:
-                # Insert after this widget
-                self._drag_state['drop_target_index'] = target_index + 1
-                self._show_drop_indicator(target_index, before=False)
-        else:
-            # Hide indicator if not over a valid target
+        # Calculate grid position
+        grid_x = local_pos.x() - margins.left()
+        grid_y = local_pos.y() - margins.top()
+        
+        col = max(0, min(columns - 1, grid_x // (cell_width + spacing)))
+        row = max(0, grid_y // (widget_height + spacing))
+        
+        # Calculate insert index based on grid position
+        insert_index = row * columns + col
+        insert_index = max(0, min(len(self.page_widgets), insert_index))
+        
+        source_index = self._drag_state['source_index']
+        
+        # Skip if trying to insert at same position as source
+        if insert_index == source_index:
             self._drag_state['drop_indicator'].hide()
+            self._drag_state['placeholder'].hide()
+            return
+        
+        # Adjust for the removed source widget
+        if source_index is not None and insert_index > source_index:
+            effective_index = insert_index - 1
+        else:
+            effective_index = insert_index
+        
+        # Store the target index
+        self._drag_state['drop_target_index'] = insert_index
+        
+        # Show preview at calculated position
+        self._show_drop_preview_at_index(insert_index, effective_index)
 
-    def _show_drop_indicator(self, index: int, before: bool = True) -> None:
-        """Show drop indicator at specified position."""
+    def _show_drop_preview_at_index(self, insert_index: int, effective_index: int) -> None:
+        """Show drop preview at specific grid index."""
+        columns = 5
+        
+        # Calculate row and column for insert position
+        row = insert_index // columns
+        col = insert_index % columns
+        
+        # Show drop indicator at the row
+        indicator = self._drag_state['drop_indicator']
+        if indicator.parent():
+            self.thumbnails_layout.removeWidget(indicator)
+        
+        # Add indicator spanning full row before the target row
+        indicator_row = row if col == 0 else row + 1
+        self.thumbnails_layout.addWidget(indicator, indicator_row, 0, 1, columns)
+        indicator.show()
+        indicator.raise_()
+        
+        # Show placeholder at specific position
+        placeholder = self._drag_state['placeholder']
+        if placeholder.parent():
+            self.thumbnails_layout.removeWidget(placeholder)
+        
+        # Calculate actual row/col for placeholder (considering effective index)
+        ph_row = effective_index // columns
+        ph_col = effective_index % columns
+        self.thumbnails_layout.addWidget(placeholder, ph_row, ph_col)
+        placeholder.show()
+        placeholder.raise_()
+
+    def _show_drop_preview(self, index: int, before: bool = True) -> None:
+        """Show drop preview with indicator line and placeholder space."""
         if index < 0 or index >= len(self.page_widgets):
             return
-            
+        
         columns = 5
         target_widget = self.page_widgets[index]
+        source_index = self._drag_state['source_index']
         
-        # Calculate row and position
-        if before:
-            row = index // columns
+        # Calculate effective insert index considering the removed source widget
+        effective_index = index
+        if source_index < index:
+            effective_index = index - 1 if before else index
+        elif source_index == index:
+            effective_index = index
         else:
-            row = (index + 1) // columns
+            effective_index = index if before else index + 1
         
-        # Remove indicator from current position if any
+        # Calculate row and column for the placeholder
+        row = effective_index // columns
+        col = effective_index % columns
+        
+        # Show drop indicator line
         if self._drag_state['drop_indicator'].parent():
             self.thumbnails_layout.removeWidget(self._drag_state['drop_indicator'])
         
-        # Add indicator to new position
+        # Position indicator based on insert direction
+        if before:
+            indicator_row = index // columns
+        else:
+            indicator_row = (index + 1) // columns
+        
         self.thumbnails_layout.addWidget(
-            self._drag_state['drop_indicator'], 
-            row, 0, 1, columns
+            self._drag_state['drop_indicator'],
+            indicator_row, 0, 1, columns
         )
         self._drag_state['drop_indicator'].show()
         self._drag_state['drop_indicator'].raise_()
+        
+        # Show placeholder at drop position
+        placeholder = self._drag_state['placeholder']
+        if placeholder.parent():
+            self.thumbnails_layout.removeWidget(placeholder)
+        
+        # Add placeholder to show where the page will be inserted
+        self.thumbnails_layout.addWidget(placeholder, row, col)
+        placeholder.show()
+        placeholder.raise_()
+        
+        # Highlight target widget with subtle effect
+        if not before:
+            # When inserting after, highlight next widget if exists
+            next_index = index + 1
+            if next_index < len(self.page_widgets) and next_index != source_index:
+                next_widget = self.page_widgets[next_index]
+                next_widget.setStyleSheet("""
+                    PageThumbnailWidget {
+                        background: #f0f7ff;
+                        border: 2px solid #90caf9;
+                        border-radius: 8px;
+                    }
+                """)
 
     def _end_drag(self, release_index: int) -> None:
         """End drag operation and perform reordering if needed."""
@@ -353,12 +497,39 @@ class OrganizerScreen(QWidget):
         source_index = self._drag_state['source_index']
         target_index = self._drag_state['drop_target_index']
         
-        # Hide drop indicator
+        # Hide drop indicator and placeholder
         self._drag_state['drop_indicator'].hide()
+        self._drag_state['placeholder'].hide()
         
         # Restore dragged widget appearance
         if self._drag_state['dragged_widget']:
             self._drag_state['dragged_widget'].setGraphicsEffect(None)
+            self._drag_state['dragged_widget'].setStyleSheet("""
+                PageThumbnailWidget {
+                    background: white;
+                    border: 2px solid transparent;
+                    border-radius: 4px;
+                }
+                PageThumbnailWidget:hover {
+                    border: 2px solid #0078d4;
+                    background: #f5f5f5;
+                }
+            """)
+        
+        # Restore all other widgets' styles
+        for widget in self.page_widgets:
+            if widget != self._drag_state['dragged_widget']:
+                widget.setStyleSheet("""
+                    PageThumbnailWidget {
+                        background: white;
+                        border: 2px solid transparent;
+                        border-radius: 4px;
+                    }
+                    PageThumbnailWidget:hover {
+                        border: 2px solid #0078d4;
+                        background: #f5f5f5;
+                    }
+                """)
         
         # Restore cursor
         from PyQt6.QtWidgets import QApplication
